@@ -8,7 +8,7 @@ export default defineConfig({
   server: { 
     port: 12001,
     host: "0.0.0.0",
-    strictPort: false,
+    strictPort: true,
     cors: true,
     allowedHosts: true,
     historyApiFallback: true,
@@ -19,7 +19,7 @@ export default defineConfig({
     }
   },
   preview: {
-    port: 12000,
+    port: 12001,
     host: "0.0.0.0",
     strictPort: true,
     cors: true,

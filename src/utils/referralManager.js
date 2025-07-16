@@ -6,42 +6,88 @@ const isValidAddress = (address) => {
 };
 
 /**
- * Referral Manager - Handles referral code to address mapping and URL parsing
+ * Referral Manager - Handles referral code to address mapping using PHP API
  */
 
-// In-memory storage for referral codes (in production, this would be a database)
-const referralCodeMap = new Map();
+// Import API configuration
+import { REFERRAL_API_URL } from '../config/api';
 
-// Storage key for localStorage
-const REFERRAL_STORAGE_KEY = 'sada_referral_codes';
+// Storage keys
 const CURRENT_REFERRER_KEY = 'sada_current_referrer';
+const REFERRAL_CODES_KEY = 'sada_referral_codes'; // Fallback storage
 
-/**
- * Load referral codes from localStorage
- */
-const loadReferralCodes = () => {
-  try {
-    const stored = localStorage.getItem(REFERRAL_STORAGE_KEY);
-    if (stored) {
-      const codes = JSON.parse(stored);
-      Object.entries(codes).forEach(([code, address]) => {
-        referralCodeMap.set(code, address);
-      });
-    }
-  } catch (error) {
-    console.warn('Failed to load referral codes from localStorage:', error);
-  }
+// Check if we're in development mode (API not available)
+const isDevelopmentMode = () => {
+  return REFERRAL_API_URL.includes('yourdomain.com') || REFERRAL_API_URL.includes('localhost');
 };
 
 /**
- * Save referral codes to localStorage
+ * Fallback localStorage functions for development
  */
-const saveReferralCodes = () => {
+const getLocalReferralCodes = () => {
   try {
-    const codes = Object.fromEntries(referralCodeMap);
-    localStorage.setItem(REFERRAL_STORAGE_KEY, JSON.stringify(codes));
+    const codes = localStorage.getItem(REFERRAL_CODES_KEY);
+    return codes ? JSON.parse(codes) : {};
   } catch (error) {
-    console.warn('Failed to save referral codes to localStorage:', error);
+    console.warn('Failed to get local referral codes:', error);
+    return {};
+  }
+};
+
+const setLocalReferralCodes = (codes) => {
+  try {
+    localStorage.setItem(REFERRAL_CODES_KEY, JSON.stringify(codes));
+  } catch (error) {
+    console.warn('Failed to set local referral codes:', error);
+  }
+};
+
+const addLocalReferralCode = (code, address) => {
+  const codes = getLocalReferralCodes();
+  codes[code.toUpperCase()] = address.toLowerCase();
+  setLocalReferralCodes(codes);
+};
+
+const getLocalReferrerAddress = (code) => {
+  const codes = getLocalReferralCodes();
+  return codes[code.toUpperCase()] || null;
+};
+
+const getLocalReferralCodeForAddress = (address) => {
+  const codes = getLocalReferralCodes();
+  const normalizedAddress = address.toLowerCase();
+  
+  for (const [code, addr] of Object.entries(codes)) {
+    if (addr === normalizedAddress) {
+      return code;
+    }
+  }
+  return null;
+};
+
+/**
+ * API Helper Functions
+ */
+const apiRequest = async (url, options = {}) => {
+  try {
+    const response = await fetch(url, {
+      headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+      },
+      ...options
+    });
+
+    const data = await response.json();
+    
+    if (!response.ok) {
+      throw new Error(data.message || data.error || 'API request failed');
+    }
+    
+    return data;
+  } catch (error) {
+    console.error('API request error:', error);
+    throw error;
   }
 };
 
@@ -50,18 +96,9 @@ const saveReferralCodes = () => {
  */
 export const initializeReferralManager = () => {
   try {
-    loadReferralCodes();
-    
-    // Add some default referral codes for testing
-    if (referralCodeMap.size === 0) {
-      // These would normally come from your backend/database
-      addReferralCode('67FAFDMCZBTTXE', '0x742d35Cc6634C0532925a3b8D4C9db96C4b4d8b9');
-      addReferralCode('TESTREF123', '0x742d35Cc6634C0532925a3b8D4C9db96C4b4d8b9');
-      addReferralCode('DEMO456', '0x8ba1f109551bD432803012645aac136c5c8b4d8b9');
-    }
+    console.log('Referral manager initialized with API backend');
   } catch (error) {
     console.error('Error initializing referral manager:', error);
-    // Continue without crashing the app
   }
 };
 
@@ -70,7 +107,7 @@ export const initializeReferralManager = () => {
  * @param {string} code - The referral code
  * @param {string} address - The Ethereum address
  */
-export const addReferralCode = (code, address) => {
+export const addReferralCode = async (code, address) => {
   if (!code || !address) {
     throw new Error('Both code and address are required');
   }
@@ -79,8 +116,34 @@ export const addReferralCode = (code, address) => {
     throw new Error('Invalid Ethereum address');
   }
   
-  referralCodeMap.set(code.toUpperCase(), address.toLowerCase());
-  saveReferralCodes();
+  // Use localStorage fallback in development mode
+  if (isDevelopmentMode()) {
+    try {
+      addLocalReferralCode(code, address);
+      console.log('Referral code added to localStorage:', code, '->', address);
+      return { success: true, message: 'Referral code added successfully (localStorage)' };
+    } catch (error) {
+      console.error('Failed to add referral code to localStorage:', error);
+      throw error;
+    }
+  }
+  
+  try {
+    const response = await apiRequest(REFERRAL_API_URL, {
+      method: 'POST',
+      body: JSON.stringify({
+        action: 'add_referral',
+        code: code.toUpperCase(),
+        address: address.toLowerCase()
+      })
+    });
+    
+    console.log('Referral code added successfully:', response);
+    return response;
+  } catch (error) {
+    console.error('Failed to add referral code:', error);
+    throw error;
+  }
 };
 
 /**
@@ -88,9 +151,28 @@ export const addReferralCode = (code, address) => {
  * @param {string} code - The referral code
  * @returns {string|null} - The Ethereum address or null if not found
  */
-export const getReferrerAddress = (code) => {
+export const getReferrerAddress = async (code) => {
   if (!code) return null;
-  return referralCodeMap.get(code.toUpperCase()) || null;
+  
+  // Use localStorage fallback in development mode
+  if (isDevelopmentMode()) {
+    try {
+      const address = getLocalReferrerAddress(code);
+      console.log('Got referrer address from localStorage:', code, '->', address);
+      return address;
+    } catch (error) {
+      console.error('Failed to get referrer address from localStorage:', error);
+      return null;
+    }
+  }
+  
+  try {
+    const response = await apiRequest(`${REFERRAL_API_URL}?action=get_referrer&code=${encodeURIComponent(code.toUpperCase())}`);
+    return response.address || null;
+  } catch (error) {
+    console.error('Failed to get referrer address:', error);
+    return null;
+  }
 };
 
 /**
@@ -159,16 +241,16 @@ export const getCurrentReferrer = () => {
  * Process referral from URL and set current referrer
  * This should be called when the app loads
  */
-export const processReferralFromURL = () => {
+export const processReferralFromURL = async () => {
   try {
     const refCode = extractReferralCodeFromURL();
     
     if (refCode) {
-      const referrerAddress = getReferrerAddress(refCode);
+      const referrerAddress = await getReferrerAddress(refCode);
       
       if (referrerAddress) {
         setCurrentReferrer(referrerAddress);
-
+        console.log(`Referral processed: ${refCode} -> ${referrerAddress}`);
         return referrerAddress;
       } else {
         console.warn(`Unknown referral code: ${refCode}`);
@@ -199,20 +281,20 @@ export const clearCurrentReferrer = () => {
 };
 
 /**
- * Get all referral codes (for admin/debug purposes)
- * @returns {Object} - Object with code -> address mappings
- */
-export const getAllReferralCodes = () => {
-  return Object.fromEntries(referralCodeMap);
-};
-
-/**
  * Check if a referral code exists
  * @param {string} code - The referral code to check
  * @returns {boolean} - True if code exists
  */
-export const hasReferralCode = (code) => {
-  return code ? referralCodeMap.has(code.toUpperCase()) : false;
+export const hasReferralCode = async (code) => {
+  if (!code) return false;
+  
+  try {
+    const address = await getReferrerAddress(code);
+    return address !== null;
+  } catch (error) {
+    console.error('Failed to check referral code:', error);
+    return false;
+  }
 };
 
 /**
@@ -220,16 +302,28 @@ export const hasReferralCode = (code) => {
  * @param {string} address - The Ethereum address
  * @returns {string|null} - The referral code or null if not found
  */
-export const getReferralCodeForAddress = (address) => {
+export const getReferralCodeForAddress = async (address) => {
   if (!address) return null;
   
-  const normalizedAddress = address.toLowerCase();
-  for (const [code, addr] of referralCodeMap.entries()) {
-    if (addr.toLowerCase() === normalizedAddress) {
+  // Use localStorage fallback in development mode
+  if (isDevelopmentMode()) {
+    try {
+      const code = getLocalReferralCodeForAddress(address);
+      console.log('Got referral code from localStorage:', address, '->', code);
       return code;
+    } catch (error) {
+      console.error('Failed to get referral code from localStorage:', error);
+      return null;
     }
   }
-  return null;
+  
+  try {
+    const response = await apiRequest(`${REFERRAL_API_URL}?action=get_code_by_address&address=${encodeURIComponent(address.toLowerCase())}`);
+    return response.code || null;
+  } catch (error) {
+    console.error('Failed to get referral code for address:', error);
+    return null;
+  }
 };
 
 /**
