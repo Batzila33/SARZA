@@ -159,28 +159,41 @@ const ReferralLinkGenerator = ({ walletAddress, isConnected }) => {
   const [isGenerating, setIsGenerating] = useState(false);
 
   useEffect(() => {
-    if (walletAddress) {
-      // Check if this address already has a referral code
-      const existingCode = getReferralCodeForAddress(walletAddress);
-      if (existingCode) {
-        setReferralCode(existingCode);
-        const link = generateReferralLink(existingCode);
-        setReferralLink(link);
-        setHasGenerated(true);
+    const checkExistingCode = async () => {
+      if (walletAddress) {
+        try {
+          // Check if this address already has a referral code
+          const existingCode = await getReferralCodeForAddress(walletAddress);
+          if (existingCode) {
+            setReferralCode(existingCode);
+            const link = generateReferralLink(existingCode);
+            setReferralLink(link);
+            setHasGenerated(true);
+          } else {
+            // Reset state for new address with no existing code
+            setReferralCode('');
+            setReferralLink('');
+            setHasGenerated(false);
+            setCopied(false);
+          }
+        } catch (error) {
+          console.error('Error checking existing referral code:', error);
+          // Reset state on error
+          setReferralCode('');
+          setReferralLink('');
+          setHasGenerated(false);
+          setCopied(false);
+        }
       } else {
-        // Reset state for new address with no existing code
+        // Reset state when wallet disconnects
         setReferralCode('');
         setReferralLink('');
         setHasGenerated(false);
         setCopied(false);
       }
-    } else {
-      // Reset state when wallet disconnects
-      setReferralCode('');
-      setReferralLink('');
-      setHasGenerated(false);
-      setCopied(false);
-    }
+    };
+    
+    checkExistingCode();
   }, [walletAddress]);
 
   const handleGenerateLink = async () => {
@@ -196,7 +209,7 @@ const ReferralLinkGenerator = ({ walletAddress, isConnected }) => {
       const newCode = generateReferralCode(walletAddress);
       
       // Add the code-to-address mapping to the referral manager
-      addReferralCode(newCode, walletAddress);
+      await addReferralCode(newCode, walletAddress);
       
       // Generate the referral link
       const newLink = generateReferralLink(newCode);
