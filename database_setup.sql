@@ -8,8 +8,3 @@ CREATE TABLE referral_codes (
     INDEX idx_code (code),
     INDEX idx_address (address)
 );
-
--- Insert some test data (optional)
-INSERT INTO referral_codes (code, address) VALUES 
-('TESTREF123', '0x742d35Cc6634C0532925a3b8D4C9db96C4b4d8b9'),
-('DEMO456', '0x8ba1f109551bD432803012645aac136c5c8b4d8b9');
