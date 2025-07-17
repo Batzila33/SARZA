@@ -1,51 +1,36 @@
 <?php
 // api/referral.php - Referral Code Management API
+// Secured version with improved security measures
 
-// CORS Headers
+// Start session for CSRF protection
+session_start();
+
+// Set secure headers
 header('Content-Type: application/json');
-header('Access-Control-Allow-Origin: *');
-header('Access-Control-Allow-Methods: GET, POST, OPTIONS');
-header('Access-Control-Allow-Headers: Content-Type, Authorization');
+header('X-Content-Type-Options: nosniff');
+header('X-Frame-Options: DENY');
+header('X-XSS-Protection: 1; mode=block');
+header('Strict-Transport-Security: max-age=31536000; includeSubDomains');
+header('Content-Security-Policy: default-src \'self\'');
 
-// Handle preflight OPTIONS request
-if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    http_response_code(200);
-    exit(0);
-}
+// Include security and database helpers
+require_once 'security.php';
+require_once 'database.php';
 
-// Database configuration - UPDATE THESE WITH YOUR HOSTINGER DATABASE DETAILS
-$host = 'localhost';
-$dbname = 'your_database_name';  // Replace with your actual database name
-$username = 'your_db_username';  // Replace with your actual database username
-$password = 'your_db_password';  // Replace with your actual database password
+// Handle CORS with restricted origins
+handleCORS();
 
-// Function to validate Ethereum address
-function isValidAddress($address) {
-    return preg_match('/^0x[a-fA-F0-9]{40}$/', $address);
-}
+// Apply rate limiting
+checkRateLimit();
 
-// Function to validate referral code
-function isValidReferralCode($code) {
-    return preg_match('/^[A-Z0-9]{6,20}$/', $code);
-}
-
-// Database connection
-try {
-    $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $username, $password);
-    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-    $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
-} catch(PDOException $e) {
-    http_response_code(500);
-    echo json_encode([
-        'success' => false,
-        'error' => 'Database connection failed',
-        'message' => 'Unable to connect to database'
-    ]);
-    exit;
-}
+// Handle preflight OPTIONS request (already handled in handleCORS)
 
 // Handle POST requests
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    // Validate API key for all POST requests
+    validateApiKey();
+    
+    // Get and validate input
     $input = json_decode(file_get_contents('php://input'), true);
     
     if (!$input) {
@@ -54,70 +39,58 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'success' => false,
             'error' => 'Invalid JSON input'
         ]);
+        logApiAccess('invalid_input', false, 'Invalid JSON format');
         exit;
     }
     
-    $action = $input['action'] ?? '';
+    // Validate CSRF token for POST requests
+    if (empty($input['csrf_token']) || !validateCSRFToken($input['csrf_token'])) {
+        // CSRF validation is handled in the validateCSRFToken function
+        logApiAccess('csrf_failure', false);
+        exit;
+    }
+    
+    // Validate and sanitize action
+    $action = validateInput($input['action'] ?? '', 'action');
+    
+    if (!$action) {
+        http_response_code(400);
+        echo json_encode([
+            'success' => false,
+            'error' => 'Invalid or missing action parameter'
+        ]);
+        logApiAccess('invalid_action', false);
+        exit;
+    }
     
     switch ($action) {
         case 'add_referral':
-            $code = strtoupper(trim($input['code'] ?? ''));
-            $address = strtolower(trim($input['address'] ?? ''));
+            // Validate and sanitize inputs
+            $code = validateInput($input['code'] ?? '', 'referral_code');
+            $address = validateInput($input['address'] ?? '', 'eth_address');
             
             // Validation
-            if (empty($code) || empty($address)) {
+            if (!$code || !$address) {
                 http_response_code(400);
                 echo json_encode([
                     'success' => false,
-                    'error' => 'Code and address are required'
+                    'error' => 'Invalid code or address format'
                 ]);
+                logApiAccess('add_referral', false, 'Invalid input format');
                 exit;
             }
             
-            if (!isValidReferralCode($code)) {
-                http_response_code(400);
-                echo json_encode([
-                    'success' => false,
-                    'error' => 'Invalid referral code format'
-                ]);
-                exit;
-            }
+            // Add referral code using the database helper
+            $result = addReferralCode($code, $address);
             
-            if (!isValidAddress($address)) {
-                http_response_code(400);
-                echo json_encode([
-                    'success' => false,
-                    'error' => 'Invalid Ethereum address'
-                ]);
-                exit;
-            }
+            // Set appropriate status code
+            http_response_code($result['success'] ? 200 : 500);
             
-            try {
-                // Use INSERT ... ON DUPLICATE KEY UPDATE to handle existing codes
-                $stmt = $pdo->prepare("
-                    INSERT INTO referral_codes (code, address) 
-                    VALUES (?, ?) 
-                    ON DUPLICATE KEY UPDATE 
-                    address = VALUES(address), 
-                    updated_at = CURRENT_TIMESTAMP
-                ");
-                $stmt->execute([$code, $address]);
-                
-                echo json_encode([
-                    'success' => true,
-                    'message' => 'Referral code added successfully',
-                    'code' => $code,
-                    'address' => $address
-                ]);
-                
-            } catch(PDOException $e) {
-                http_response_code(500);
-                echo json_encode([
-                    'success' => false,
-                    'error' => 'Database error',
-                    'message' => 'Failed to add referral code'
-                ]);
-            }
+            // Log the action
+            logApiAccess('add_referral', $result['success'], $result['success'] ? 'Success' : $result['error']);
+            
+            // Return sanitized result
+            echo json_encode(sanitizeOutput($result));
             break;
             
         default:
@@ -126,120 +99,96 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'success' => false,
                 'error' => 'Invalid action'
             ]);
+            logApiAccess('invalid_action', false, "Unknown action: $action");
     }
 }
 
 // Handle GET requests
 elseif ($_SERVER['REQUEST_METHOD'] === 'GET') {
-    $action = $_GET['action'] ?? '';
+    // Validate API key for sensitive GET requests
+    if (in_array($_GET['action'] ?? '', ['get_referrer', 'get_code_by_address'])) {
+        validateApiKey();
+    }
+    
+    // Validate and sanitize action
+    $action = validateInput($_GET['action'] ?? '', 'action');
+    
+    if (!$action) {
+        http_response_code(400);
+        echo json_encode([
+            'success' => false,
+            'error' => 'Invalid or missing action parameter'
+        ]);
+        logApiAccess('invalid_action', false);
+        exit;
+    }
     
     switch ($action) {
         case 'get_referrer':
-            $code = strtoupper(trim($_GET['code'] ?? ''));
+            // Validate and sanitize code
+            $code = validateInput($_GET['code'] ?? '', 'referral_code');
             
-            if (empty($code)) {
-                http_response_code(400);
-                echo json_encode([
-                    'success' => false,
-                    'error' => 'Referral code is required'
-                ]);
-                exit;
-            }
-            
-            if (!isValidReferralCode($code)) {
+            if (!$code) {
                 http_response_code(400);
                 echo json_encode([
                     'success' => false,
                     'error' => 'Invalid referral code format'
                 ]);
+                logApiAccess('get_referrer', false, 'Invalid code format');
                 exit;
             }
             
-            try {
-                $stmt = $pdo->prepare("SELECT address, created_at FROM referral_codes WHERE code = ?");
-                $stmt->execute([$code]);
-                $result = $stmt->fetch();
-                
-                if ($result) {
-                    echo json_encode([
-                        'success' => true,
-                        'address' => $result['address'],
-                        'created_at' => $result['created_at']
-                    ]);
-                } else {
-                    echo json_encode([
-                        'success' => true,
-                        'address' => null,
-                        'message' => 'Referral code not found'
-                    ]);
-                }
-                
-            } catch(PDOException $e) {
-                http_response_code(500);
-                echo json_encode([
-                    'success' => false,
-                    'error' => 'Database error',
-                    'message' => 'Failed to retrieve referral code'
-                ]);
-            }
+            // Get referrer using the database helper
+            $result = getReferrerByCode($code);
+            
+            // Set appropriate status code
+            http_response_code($result['success'] ? 200 : 500);
+            
+            // Log the action
+            logApiAccess('get_referrer', $result['success'], $result['success'] ? 'Success' : $result['error']);
+            
+            // Return sanitized result
+            echo json_encode(sanitizeOutput($result));
             break;
             
         case 'get_code_by_address':
-            $address = strtolower(trim($_GET['address'] ?? ''));
+            // Validate and sanitize address
+            $address = validateInput($_GET['address'] ?? '', 'eth_address');
             
-            if (empty($address)) {
-                http_response_code(400);
-                echo json_encode([
-                    'success' => false,
-                    'error' => 'Address is required'
-                ]);
-                exit;
-            }
-            
-            if (!isValidAddress($address)) {
+            if (!$address) {
                 http_response_code(400);
                 echo json_encode([
                     'success' => false,
                     'error' => 'Invalid Ethereum address'
                 ]);
+                logApiAccess('get_code_by_address', false, 'Invalid address format');
                 exit;
             }
             
-            try {
-                $stmt = $pdo->prepare("SELECT code, created_at FROM referral_codes WHERE address = ? ORDER BY created_at DESC LIMIT 1");
-                $stmt->execute([$address]);
-                $result = $stmt->fetch();
-                
-                if ($result) {
-                    echo json_encode([
-                        'success' => true,
-                        'code' => $result['code'],
-                        'created_at' => $result['created_at']
-                    ]);
-                } else {
-                    echo json_encode([
-                        'success' => true,
-                        'code' => null,
-                        'message' => 'No referral code found for this address'
-                    ]);
-                }
-                
-            } catch(PDOException $e) {
-                http_response_code(500);
-                echo json_encode([
-                    'success' => false,
-                    'error' => 'Database error',
-                    'message' => 'Failed to retrieve referral code'
-                ]);
-            }
+            // Get code using the database helper
+            $result = getCodeByAddress($address);
+            
+            // Set appropriate status code
+            http_response_code($result['success'] ? 200 : 500);
+            
+            // Log the action
+            logApiAccess('get_code_by_address', $result['success'], $result['success'] ? 'Success' : $result['error']);
+            
+            // Return sanitized result
+            echo json_encode(sanitizeOutput($result));
             break;
             
         case 'health':
-            echo json_encode([
+            // Health check doesn't need API key validation
+            $result = [
                 'success' => true,
                 'message' => 'API is working',
-                'timestamp' => date('Y-m-d H:i:s')
-            ]);
+                'timestamp' => date('Y-m-d H:i:s'),
+                'csrf_token' => generateCSRFToken() // Generate a new CSRF token for the client
+            ];
+            
+            logApiAccess('health', true);
+            echo json_encode($result);
             break;
             
         default:
@@ -248,6 +197,7 @@ elseif ($_SERVER['REQUEST_METHOD'] === 'GET') {
                 'success' => false,
                 'error' => 'Invalid action'
             ]);
+            logApiAccess('invalid_action', false, "Unknown action: $action");
     }
 }
 
@@ -258,5 +208,6 @@ else {
         'success' => false,
         'error' => 'Method not allowed'
     ]);
+    logApiAccess('method_not_allowed', false, "Method: {$_SERVER['REQUEST_METHOD']}");
 }
 ?>
