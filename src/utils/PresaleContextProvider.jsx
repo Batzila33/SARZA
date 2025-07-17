@@ -521,8 +521,17 @@ const PresaleContextProvider = ({ children }) => {
 
   // Process referral from URL on component mount
   useEffect(() => {
-    const referrer = processReferralFromURL();
-    setCurrentReferrer(referrer);
+    const processReferral = async () => {
+      try {
+        const referrer = await processReferralFromURL();
+        setCurrentReferrer(referrer);
+      } catch (error) {
+        console.error('Error processing referral from URL:', error);
+        setCurrentReferrer(null);
+      }
+    };
+    
+    processReferral();
   }, []);
 
   return (
